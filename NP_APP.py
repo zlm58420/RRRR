@@ -8,6 +8,14 @@ import os
 # Set page config at the very beginning
 st.set_page_config(page_title="Lung Nodule Risk Prediction", page_icon="🫁", layout="wide")
 
+# Try to import LightGBM, handle if not available
+try:
+    import lightgbm
+    LIGHTGBM_AVAILABLE = True
+except ImportError:
+    LIGHTGBM_AVAILABLE = False
+    st.warning("⚠️ LightGBM is not available. Large nodule model will not work properly.")
+
 # Custom CSS styling
 st.markdown("""
 <style>
@@ -38,97 +46,82 @@ st.markdown("""
         border-radius: 5px;
         border-left: 5px solid #dc3545;
     }
+    .model-info {
+        background-color: #e9ecef;
+        padding: 15px;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# Define fixed feature set based on your optimization results
+FEATURE_SET = ['Gender', 'Spiculated', 'Age', 'Nodule diameter', 'CEA', 'SCC', 'Cyfra21_1', 'NSE']
 
 # Check and load models function
 @st.cache_resource
 def load_models():
     """Safely load model files"""
-    models = {}
     
-    # Define possible model file paths
+    # Define model file paths
     model_files = {
-        'small': ['S8mm_model.joblib', 'optimized_LR_small_nodules.pkl', 'best_model_small_nodules_external_LR.pkl'],
-        'large': ['L8mm_model.joblib', 'optimized_LGB_large_nodules.pkl', 'best_model_large_nodules_external_LGB.pkl']
-    }
-    
-    feature_files = {
-        'small': ['S8mmfeatures.joblib'],
-        'large': ['L8mmfeatures.joblib']
+        'small': 'optimized_LR_small_nodules.pkl',
+        'large': 'optimized_LGB_large_nodules.pkl'
     }
     
     # Try to load small nodule model
     model_small = None
-    for model_file in model_files['small']:
+    if os.path.exists(model_files['small']):
         try:
-            if os.path.exists(model_file):
-                model_small = joblib.load(model_file)
-                st.success(f"✓ Loaded small nodule model: {model_file}")
-                break
+            model_small = joblib.load(model_files['small'])
+            st.success(f"✓ Loaded small nodule model: {model_files['small']}")
         except Exception as e:
-            st.warning(f"Failed to load {model_file}: {str(e)}")
-            continue
+            st.error(f"Failed to load small nodule model: {str(e)}")
+    else:
+        st.error(f"Small nodule model file not found: {model_files['small']}")
     
     # Try to load large nodule model
     model_large = None
-    for model_file in model_files['large']:
+    if os.path.exists(model_files['large']):
         try:
-            if os.path.exists(model_file):
-                model_large = joblib.load(model_file)
-                st.success(f"✓ Loaded large nodule model: {model_file}")
-                break
+            if not LIGHTGBM_AVAILABLE:
+                st.error(f"Cannot load {model_files['large']}: LightGBM not installed")
+            else:
+                model_large = joblib.load(model_files['large'])
+                st.success(f"✓ Loaded large nodule model: {model_files['large']}")
         except Exception as e:
-            st.warning(f"Failed to load {model_file}: {str(e)}")
-            continue
+            error_msg = str(e)
+            if "lightgbm" in error_msg.lower():
+                st.error(f"Cannot load {model_files['large']}: LightGBM not installed")
+            else:
+                st.error(f"Failed to load large nodule model: {error_msg}")
+    else:
+        st.error(f"Large nodule model file not found: {model_files['large']}")
     
-    # Try to load features
-    features_small = ['Age', 'Gender', 'Active or former smoker', 'Spiculated', 'Calcification', 
-                     'Nodule diameter', 'CEA', 'SCC', 'Cyfra21_1', 'NSE']
-    features_large = features_small.copy()
-    
-    for feature_file in feature_files['small']:
-        try:
-            if os.path.exists(feature_file):
-                features_small = joblib.load(feature_file)
-                st.success(f"✓ Loaded small nodule features: {feature_file}")
-                break
-        except Exception as e:
-            st.warning(f"Failed to load feature file {feature_file}: {str(e)}")
-            continue
-    
-    for feature_file in feature_files['large']:
-        try:
-            if os.path.exists(feature_file):
-                features_large = joblib.load(feature_file)
-                st.success(f"✓ Loaded large nodule features: {feature_file}")
-                break
-        except Exception as e:
-            st.warning(f"Failed to load feature file {feature_file}: {str(e)}")
-            continue
-    
-    return model_small, model_large, features_small, features_large
+    return model_small, model_large
 
-def get_user_input(features, nodule_diameter):
-    """Get user input"""
+def get_user_input(nodule_diameter):
+    """Get user input for the fixed feature set"""
     input_data = {}
     
-    # Remove nodule diameter from features list since we get it separately
-    features_without_diameter = [f for f in features if f != 'Nodule diameter']
+    st.subheader("📋 Patient Clinical Features")
+    st.info(f"Using optimized feature set: {', '.join(FEATURE_SET)}")
     
     # Split features into two columns
-    mid_point = len(features_without_diameter) // 2
-    col1_features = features_without_diameter[:mid_point]
-    col2_features = features_without_diameter[mid_point:]
-    
-    st.subheader("📋 Patient Clinical Features")
+    mid_point = len(FEATURE_SET) // 2
+    col1_features = FEATURE_SET[:mid_point]
+    col2_features = FEATURE_SET[mid_point:]
     
     col1, col2 = st.columns(2)
     
     # First column
     with col1:
         for feature in col1_features:
-            if feature in ['Age', 'CEA', 'SCC', 'Cyfra21_1', 'NSE', 'ProGRP']:
+            if feature == 'Nodule diameter':
+                # Already set from sidebar, just display
+                st.write(f"**Nodule Diameter:** {nodule_diameter} mm")
+                input_data[feature] = nodule_diameter
+            elif feature in ['Age', 'CEA', 'SCC', 'Cyfra21_1', 'NSE']:
                 # Continuous variables
                 input_data[feature] = st.number_input(
                     f"{feature}",
@@ -137,27 +130,29 @@ def get_user_input(features, nodule_diameter):
                     step=0.1,
                     help=f"Enter {feature} value"
                 )
-            else:
-                # Categorical variables
-                if feature == 'Gender':
-                    gender_option = st.selectbox(
-                        "Gender",
-                        ["Select", "Female", "Male"],
-                        index=0
-                    )
-                    input_data[feature] = 0 if gender_option == "Female" else 1 if gender_option == "Male" else 0
-                else:
-                    option = st.selectbox(
-                        f"{feature}",
-                        ["Select", "No", "Yes"],
-                        index=0
-                    )
-                    input_data[feature] = 0 if option == "No" else 1 if option == "Yes" else 0
+            elif feature == 'Gender':
+                gender_option = st.selectbox(
+                    "Gender",
+                    ["Select", "Female", "Male"],
+                    index=0
+                )
+                input_data[feature] = 0 if gender_option == "Female" else 1 if gender_option == "Male" else 0
+            elif feature == 'Spiculated':
+                option = st.selectbox(
+                    f"{feature}",
+                    ["Select", "No", "Yes"],
+                    index=0
+                )
+                input_data[feature] = 0 if option == "No" else 1 if option == "Yes" else 0
     
     # Second column
     with col2:
         for feature in col2_features:
-            if feature in ['Age', 'CEA', 'SCC', 'Cyfra21_1', 'NSE', 'ProGRP']:
+            if feature == 'Nodule diameter':
+                # Already set from sidebar, just display
+                st.write(f"**Nodule Diameter:** {nodule_diameter} mm")
+                input_data[feature] = nodule_diameter
+            elif feature in ['Age', 'CEA', 'SCC', 'Cyfra21_1', 'NSE']:
                 input_data[feature] = st.number_input(
                     f"{feature}",
                     min_value=0.0,
@@ -166,30 +161,26 @@ def get_user_input(features, nodule_diameter):
                     help=f"Enter {feature} value",
                     key=f"{feature}_col2"
                 )
-            else:
-                if feature == 'Gender':
-                    gender_option = st.selectbox(
-                        "Gender",
-                        ["Select", "Female", "Male"],
-                        index=0,
-                        key="gender_col2"
-                    )
-                    input_data[feature] = 0 if gender_option == "Female" else 1 if gender_option == "Male" else 0
-                else:
-                    option = st.selectbox(
-                        f"{feature}",
-                        ["Select", "No", "Yes"],
-                        index=0,
-                        key=f"{feature}_col2"
-                    )
-                    input_data[feature] = 0 if option == "No" else 1 if option == "Yes" else 0
-    
-    # Add nodule diameter
-    input_data['Nodule diameter'] = nodule_diameter
+            elif feature == 'Gender':
+                gender_option = st.selectbox(
+                    "Gender",
+                    ["Select", "Female", "Male"],
+                    index=0,
+                    key="gender_col2"
+                )
+                input_data[feature] = 0 if gender_option == "Female" else 1 if gender_option == "Male" else 0
+            elif feature == 'Spiculated':
+                option = st.selectbox(
+                    f"{feature}",
+                    ["Select", "No", "Yes"],
+                    index=0,
+                    key=f"{feature}_col2"
+                )
+                input_data[feature] = 0 if option == "No" else 1 if option == "Yes" else 0
     
     return input_data
 
-def display_prediction(malignancy_prob, input_data):
+def display_prediction(malignancy_prob, input_data, model_type):
     """Display prediction results"""
     st.subheader("📊 Prediction Results")
     
@@ -227,41 +218,58 @@ def display_prediction(malignancy_prob, input_data):
     st.subheader("Risk Probability Distribution")
     st.progress(float(malignancy_prob))
     st.caption(f"Current malignancy probability: {malignancy_prob:.1%}")
+    
+    # Model performance info
+    st.markdown("---")
+    st.subheader("ℹ️ Model Information")
+    
+    col_info1, col_info2 = st.columns(2)
+    
+    with col_info1:
+        st.markdown('<div class="model-info">', unsafe_allow_html=True)
+        st.write(f"**Model Type:** {model_type}")
+        st.write(f"**Validation AUC:** 0.860 (Small) / 0.853 (Large)")
+        st.write(f"**Features Used:** {len(FEATURE_SET)}")
+        st.write("</div>", unsafe_allow_html=True)
+    
+    with col_info2:
+        st.markdown('<div class="model-info">', unsafe_allow_html=True)
+        st.write("**Optimized Feature Set:**")
+        for feature in FEATURE_SET:
+            st.write(f"- {feature}")
+        st.write("</div>", unsafe_allow_html=True)
 
 def main():
     """Main function"""
     st.markdown('<div class="main-header">🫁 Pulmonary Nodule Malignancy Risk Assessment</div>', unsafe_allow_html=True)
     st.markdown("---")
     
-    # Show current working directory and file list (for debugging)
-    if st.sidebar.checkbox("Show debug information"):
-        st.sidebar.write("Current working directory:", os.getcwd())
-        st.sidebar.write("Files in directory:", [f for f in os.listdir('.') if f.endswith(('.joblib', '.pkl'))])
+    # Show dependency status
+    if not LIGHTGBM_AVAILABLE:
+        st.error("""
+        ❌ LightGBM is not installed. Large nodule predictions will not work.
+        
+        **To fix this, run:**  
+        `pip install lightgbm`
+        """)
     
     # Load models
     with st.spinner("Loading prediction models..."):
-        model_small, model_large, features_small, features_large = load_models()
+        model_small, model_large = load_models()
     
     # Check if models loaded successfully
-    if model_small is None and model_large is None:
+    if model_small is None:
         st.error("""
-        ❌ Unable to load prediction models. Please ensure the following files exist in the current directory:
-        
-        **Small Nodule Model Files (one of):**
-        - S8mm_model.joblib
-        - optimized_LR_small_nodules.pkl  
-        - best_model_small_nodules_external_LR.pkl
-        
-        **Large Nodule Model Files (one of):**
-        - L8mm_model.joblib
-        - optimized_LGB_large_nodules.pkl
-        - best_model_large_nodules_external_LGB.pkl
-        
-        **Feature Files (optional):**
-        - S8mmfeatures.joblib
-        - L8mmfeatures.joblib
+        ❌ Unable to load small nodule model. Please ensure the following file exists:
+        - optimized_LR_small_nodules.pkl
         """)
         return
+    
+    if model_large is None and LIGHTGBM_AVAILABLE:
+        st.error("""
+        ❌ Unable to load large nodule model. Please ensure the following file exists:
+        - optimized_LGB_large_nodules.pkl
+        """)
     
     # Sidebar - Nodule Information
     with st.sidebar:
@@ -280,22 +288,29 @@ def main():
             if model_small is not None:
                 st.success("**Small Nodule Model** (≤8mm)")
                 current_model = model_small
-                current_features = features_small
-                model_type = "Small Nodule Model (Logistic Regression)"
+                model_type = "Optimized Logistic Regression (Small Nodules)"
+                expected_auc = "0.860"
             else:
                 st.error("Small nodule model not available")
                 return
         else:
-            if model_large is not None:
+            if model_large is not None and LIGHTGBM_AVAILABLE:
                 st.success("**Large Nodule Model** (>8mm)")
                 current_model = model_large
-                current_features = features_large
-                model_type = "Large Nodule Model (LightGBM)"
+                model_type = "Optimized LightGBM (Large Nodules)"
+                expected_auc = "0.853"
             else:
                 st.error("Large nodule model not available")
+                st.info("Please install LightGBM to enable large nodule predictions")
                 return
         
-        st.info(f"Using model: {model_type}")
+        st.info(f"Using: {model_type}")
+        st.info(f"Expected AUC: {expected_auc}")
+        
+        # Show feature set in sidebar
+        with st.expander("Feature Set (8 features)"):
+            for feature in FEATURE_SET:
+                st.write(f"- {feature}")
         
         # Predict button
         predict_button = st.button(
@@ -307,11 +322,20 @@ def main():
     # Main content area
     if current_model is not None:
         # Get user input
-        input_data = get_user_input(current_features, nodule_diameter)
+        input_data = get_user_input(nodule_diameter)
         
         # Show input summary
         with st.expander("📋 Input Data Summary", expanded=True):
-            st.json(input_data)
+            # Create a nicer display of input data
+            col1, col2 = st.columns(2)
+            with col1:
+                for i, (key, value) in enumerate(input_data.items()):
+                    if i < len(input_data) // 2:
+                        st.write(f"**{key}:** {value}")
+            with col2:
+                for i, (key, value) in enumerate(input_data.items()):
+                    if i >= len(input_data) // 2:
+                        st.write(f"**{key}:** {value}")
         
         # Execute prediction
         if predict_button:
@@ -322,30 +346,15 @@ def main():
             else:
                 try:
                     with st.spinner("Performing risk assessment..."):
-                        # Prepare input data
-                        input_df = pd.DataFrame([input_data])
-                        
-                        # Ensure correct feature order
-                        if hasattr(current_model, 'feature_names_in_'):
-                            expected_features = current_model.feature_names_in_
-                        else:
-                            expected_features = current_features
-                        
-                        input_df = input_df[expected_features]
+                        # Prepare input data - ensure correct order
+                        input_df = pd.DataFrame([input_data])[FEATURE_SET]
                         
                         # Execute prediction
                         prediction = current_model.predict_proba(input_df)
                         malignancy_prob = prediction[0][1]  # Get malignancy probability
                     
                     # Display results
-                    display_prediction(malignancy_prob, input_data)
-                    
-                    # Show model information
-                    with st.expander("ℹ️ Model Information"):
-                        st.write(f"**Model Type:** {type(current_model).__name__}")
-                        st.write(f"**Nodule Diameter:** {nodule_diameter} mm")
-                        st.write(f"**Number of Features:** {len(expected_features)}")
-                        st.write(f"**Feature List:** {', '.join(expected_features)}")
+                    display_prediction(malignancy_prob, input_data, model_type)
                         
                 except Exception as e:
                     st.error(f"Error during prediction: {str(e)}")
